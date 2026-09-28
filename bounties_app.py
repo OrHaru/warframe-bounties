@@ -299,42 +299,41 @@ HUB_COLORS = {
 
 st.markdown("""
 <style>
-.block-container {padding-top: 2.5rem; padding-bottom: 1rem;}
-.bt-top {display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px;
-         margin-bottom:0.6rem;}
+.block-container {padding-top: 2.2rem; padding-bottom: 1rem;}
+.bt-top {display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px;}
+.bt-title {font-size:1.55rem; font-weight:700; margin-right:6px; line-height:1.2;}
 .bt-chip {display:inline-flex; align-items:center; gap:6px; padding:3px 11px;
           border-radius:999px; font-size:0.92rem; background:rgba(128,128,128,0.12);
           font-variant-numeric:tabular-nums;}
 .bt-chip.live {background:rgba(46,160,90,0.16); color:#2EA05A; font-weight:600;}
 .bt-chip.stale {background:rgba(220,70,60,0.16); color:#DC463C; font-weight:600;}
 .bt-chip.dim {background:none; opacity:0.6; font-size:0.82rem;}
-.bt-hub {margin-bottom:1rem;}
-.bt-head {display:flex; align-items:baseline; gap:8px; margin:0 0 6px 0;}
+.bt-hub {margin-bottom:0.7rem;}
+.bt-head {display:flex; align-items:baseline; gap:8px; margin:0 0 4px 0;}
 .bt-head b {font-size:1.1rem; color:var(--acc);}
 .bt-head span {opacity:0.65; font-size:0.9rem;}
 .bt-box {overflow-x:auto; border:1px solid rgba(128,128,128,0.25);
          border-top:3px solid var(--acc); border-radius:8px;
          background:rgba(128,128,128,0.04);}
-table.bt {width:100%; border-collapse:collapse; font-size:0.95rem; margin:0;
+table.bt {width:100%; border-collapse:collapse; font-size:0.92rem; margin:0; line-height:1.25;
           border:none; font-variant-numeric:tabular-nums;}
 table.bt th {text-align:left; font-size:0.75rem; letter-spacing:0.05em;
              text-transform:uppercase; opacity:0.65; font-weight:600;
-             padding:7px 10px; border:none;
+             padding:5px 9px; border:none;
              border-bottom:1px solid rgba(128,128,128,0.25);}
-table.bt td {padding:6px 10px; vertical-align:top; border:none;
+table.bt td {padding:4px 9px; vertical-align:top; border:none;
              border-bottom:1px solid rgba(128,128,128,0.18);}
 table.bt tr:last-child td {border-bottom:none;}
 table.bt td.t {font-weight:700; color:var(--acc); width:2em;}
 table.bt .node {font-weight:600; white-space:nowrap; display:block;}
-table.bt .mt {opacity:0.65; font-size:0.84rem; white-space:nowrap; display:block;}
+table.bt .mt {opacity:0.65; font-size:0.8rem; white-space:nowrap; display:block;}
 table.bt .rw {white-space:nowrap; text-align:right;}
-table.bt .rw small {display:block; opacity:0.65; font-size:0.8rem;}
+table.bt .rw small {display:block; opacity:0.65; font-size:0.78rem;}
 table.bt .ally {opacity:0.75; white-space:nowrap;}
 </style>
 """, unsafe_allow_html=True)
 
-head, btn = st.columns([5, 1], vertical_alignment="center")
-head.markdown("## Warframe Bounties")
+head, btn = st.columns([7, 1], vertical_alignment="center")
 if btn.button("🔄 Refresh", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
@@ -360,24 +359,44 @@ else:
                  f"{int(-delta.total_seconds() // 60)} min ago, press Refresh</span>")
 
 # --- Cetus
+# The Cetus cycle (100 min day + 50 min night) ends exactly when the 150-min
+# bounty rotation ends, so when warframestat is stale or down we can work it
+# out from the bounty feed's expiry instead.
+def cetus_from_feed():
+    left = (expiry - now).total_seconds() / 60
+    if left <= 0:
+        return None
+    if left > 50:
+        return "day", expiry - dt.timedelta(minutes=50)
+    return "night", expiry
+
+
+cetus = None
 try:
     c = load_cetus()
     state = c.get("state") or ("day" if c.get("isDay") else "night")
     cexp = dt.datetime.fromisoformat(c["expiry"].replace("Z", "+00:00"))
+    if cexp > now:
+        cetus = (state, cexp)
+except Exception:
+    pass
+if cetus is None:
+    cetus = cetus_from_feed()
+
+if cetus:
+    state, cexp = cetus
     mins = int((cexp - now).total_seconds() // 60)
     nxt = "night" if state == "day" else "day"
     icon = "☀️" if state == "day" else "🌙"
-    if mins >= 0:
-        chips.append(f"<span class='bt-chip'>{icon} Cetus {state} · {mins} min to "
-                     f"{nxt} ({cexp.astimezone(LOCAL_TZ):%H:%M})</span>")
-    else:
-        chips.append(f"<span class='bt-chip'>{icon} Cetus data outdated</span>")
-except Exception as e:
-    chips.append(f"<span class='bt-chip'>Cetus unavailable ({type(e).__name__})</span>")
+    chips.append(f"<span class='bt-chip'>{icon} Cetus {state} · {mins} min to "
+                 f"{nxt} ({cexp.astimezone(LOCAL_TZ):%H:%M})</span>")
+else:
+    chips.append("<span class='bt-chip'>Cetus unavailable</span>")
 
 chips.append(f"<span class='bt-chip dim'>rot {feed['rot']}/{feed['vaultRot']} · "
              f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M}</span>")
-st.markdown(f"<div class='bt-top'>{''.join(chips)}</div>", unsafe_allow_html=True)
+head.markdown(f"<div class='bt-top'><span class='bt-title'>Warframe Bounties</span>"
+              f"{''.join(chips)}</div>", unsafe_allow_html=True)
 
 # --- lookups
 try:
