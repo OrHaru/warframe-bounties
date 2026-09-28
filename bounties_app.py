@@ -285,9 +285,30 @@ def table(feed, nodes, spec, cdict):
 
 
 # ---------------------------------------------------------------- page
-head, btn = st.columns([4, 1])
-head.title("🎯 Warframe Bounties")
-if btn.button("🔄 Force refresh", use_container_width=True):
+# Compact styling: less top padding, small tight tables that follow the
+# light/dark theme (borders are semi-transparent grey).
+st.markdown("""
+<style>
+.block-container {padding-top: 3rem; padding-bottom: 1rem;}
+.bt-h {font-weight: 700; font-size: 0.95rem; margin: 0.3rem 0 0.15rem 0;}
+.bt-status {font-size: 0.85rem; margin-bottom: 0.3rem;}
+table.bt {width: 100%; border-collapse: collapse; font-size: 0.78rem;
+          margin-bottom: 0.3rem; border: none;}
+table.bt th, table.bt td {padding: 2px 6px; line-height: 1.25; text-align: left;
+          vertical-align: top; white-space: nowrap; border: none;
+          border-bottom: 1px solid rgba(128,128,128,0.25);}
+table.bt th {font-weight: 600; opacity: 0.7;}
+table.bt td:nth-child(4) {white-space: normal;}   /* bonus text may wrap */
+table.bt td:nth-child(1), table.bt th:nth-child(1) {text-align: center;}
+</style>
+""", unsafe_allow_html=True)
+
+COL_NAMES = {"tier": "T", "mission": "Mission", "node": "Node", "bonus": "Bonus",
+             "levels_sp": "SP lvl", "reward": "Reward", "ally": "Ally"}
+
+head, btn = st.columns([5, 1], vertical_alignment="center")
+head.markdown("### 🎯 Warframe Bounties")
+if btn.button("🔄 Refresh", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
@@ -302,15 +323,13 @@ except Exception as e:
 
 expiry = dt.datetime.fromtimestamp(feed["expiry"] / 1000, dt.timezone.utc)
 delta = expiry - now
-local_exp = expiry.astimezone(LOCAL_TZ)
-
-c1, c2, c3 = st.columns(3)
+parts = []
 if delta.total_seconds() > 0:
-    c1.success(f"**LIVE** - {int(delta.total_seconds() // 60)} min left "
-               f"(rotates {local_exp:%H:%M})")
+    parts.append(f"🟢 <b>LIVE</b> {int(delta.total_seconds() // 60)} min left "
+                 f"(rotates {expiry.astimezone(LOCAL_TZ):%H:%M})")
 else:
-    c1.warning(f"**STALE** - expired {int(-delta.total_seconds() // 60)} min ago. "
-               "Hit Force refresh.")
+    parts.append(f"🔴 <b>STALE</b> expired {int(-delta.total_seconds() // 60)} "
+                 "min ago, press Refresh")
 
 # --- Cetus
 try:
@@ -321,15 +340,17 @@ try:
     nxt = "night" if state == "day" else "day"
     icon = "☀️" if state == "day" else "🌙"
     if mins >= 0:
-        c2.info(f"{icon} Cetus **{state.upper()}** - {mins} min to {nxt} "
-                f"(at {cexp.astimezone(LOCAL_TZ):%H:%M})")
+        parts.append(f"{icon} Cetus <b>{state.upper()}</b> {mins} min to {nxt} "
+                     f"({cexp.astimezone(LOCAL_TZ):%H:%M})")
     else:
-        c2.info(f"{icon} Cetus data outdated - press Force refresh")
+        parts.append(f"{icon} Cetus outdated")
 except Exception as e:
-    c2.info(f"Cetus unavailable ({type(e).__name__})")
+    parts.append(f"Cetus unavailable ({type(e).__name__})")
 
-c3.caption(f"rot {feed['rot']} / vault {feed['vaultRot']}  \n"
-           f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M:%S}")
+parts.append(f"<span style='opacity:.6'>rot {feed['rot']}/{feed['vaultRot']} · "
+             f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M}</span>")
+st.markdown(f"<div class='bt-status'>{' &nbsp;·&nbsp; '.join(parts)}</div>",
+            unsafe_allow_html=True)
 
 # --- lookups
 try:
@@ -338,25 +359,38 @@ except RuntimeError as e:
     st.warning(f"{e}. Node names and mission types will show as IDs.")
     nodes = {}
 cdict = load_challenge_dict()
+present = set(feed["bounties"].keys())
+
+
+def render(label):
+    spec = SYNDICATES[label]
+    st.markdown(f"<div class='bt-h'>{label}</div>", unsafe_allow_html=True)
+    if spec["key"] not in present:
+        st.caption("(not present in this feed)")
+        return
+    df = table(feed, nodes, spec, cdict)
+    if df.empty:
+        st.caption("(no bounties in this feed)")
+        return
+    html = df.rename(columns=COL_NAMES).to_html(index=False, classes="bt", border=0)
+    # strip newlines so markdown doesn't treat indented HTML as a code block
+    st.markdown(html.replace("\n", ""), unsafe_allow_html=True)
+
+
+# --- tables: Cavia + Zariman side by side (5 rows each), Hex full width.
+# On a phone the two columns stack automatically.
+left, right = st.columns(2)
+with left:
+    render("Cavia (Sanctum Anatomica)")
+with right:
+    render("Holdfasts (Zariman)")
+render("Hex (Hollvania / 1999)")
 
 # --- unmapped syndicates (new hub added to the feed?)
 known = {s["key"] for s in SYNDICATES.values()}
-present = set(feed["bounties"].keys())
 unmapped = sorted(present - known)
 if unmapped:
     with st.expander(f"⚠️ Feed has unmapped syndicate keys: {', '.join(unmapped)}"):
         for k in unmapped:
             st.write(f"**{k}**: {len(feed['bounties'][k])} entries")
             st.json(feed["bounties"][k][:2])
-
-# --- tables
-for label, spec in SYNDICATES.items():
-    st.subheader(label)
-    if spec["key"] not in present:
-        st.caption("(not present in this feed)")
-        continue
-    df = table(feed, nodes, spec, cdict)
-    if df.empty:
-        st.caption("(no bounties in this feed)")
-    else:
-        st.dataframe(df, hide_index=True, use_container_width=True)
