@@ -11,6 +11,7 @@ Run locally:   streamlit run bounties_app.py
 
 import datetime as dt
 import time
+from html import escape
 
 import pandas as pd
 import requests
@@ -260,7 +261,8 @@ def table(feed, nodes, spec, cdict):
             name, mtype = spec["extra_nodes"][nid]
         else:
             meta = nodes.get(nid, {})
-            name = meta.get("value", nid).replace(" (Deimos)", "")
+            # drop the planet suffix, e.g. "Armatus (Deimos)" -> "Armatus"
+            name = meta.get("value", nid).split(" (")[0]
             mtype = meta.get("type", "?")
 
         tier = spec["tiers"][i] if i < len(spec["tiers"]) else {}
@@ -285,29 +287,54 @@ def table(feed, nodes, spec, cdict):
 
 
 # ---------------------------------------------------------------- page
-# Compact styling: less top padding, small tight tables that follow the
-# light/dark theme (borders are semi-transparent grey).
+# Layout "A - readable tables": 15px text, node + mission in one cell,
+# reward + SP level in one cell, one accent colour per hub.
+# Colours are mid-tones and greys are semi-transparent, so the page works
+# in both Streamlit's light and dark theme.
+HUB_COLORS = {
+    "EntratiLabSyndicate": "#2BA89E",  # Cavia - teal
+    "ZarimanSyndicate": "#C9A227",     # Holdfasts - gold
+    "HexSyndicate": "#D94F86",         # Hex - pink
+}
+
 st.markdown("""
 <style>
-.block-container {padding-top: 3rem; padding-bottom: 1rem;}
-.bt-h {font-weight: 700; font-size: 0.95rem; margin: 0.3rem 0 0.15rem 0;}
-.bt-status {font-size: 0.85rem; margin-bottom: 0.3rem;}
-table.bt {width: 100%; border-collapse: collapse; font-size: 0.78rem;
-          margin-bottom: 0.3rem; border: none;}
-table.bt th, table.bt td {padding: 2px 6px; line-height: 1.25; text-align: left;
-          vertical-align: top; white-space: nowrap; border: none;
-          border-bottom: 1px solid rgba(128,128,128,0.25);}
-table.bt th {font-weight: 600; opacity: 0.7;}
-table.bt td:nth-child(4) {white-space: normal;}   /* bonus text may wrap */
-table.bt td:nth-child(1), table.bt th:nth-child(1) {text-align: center;}
+.block-container {padding-top: 2.5rem; padding-bottom: 1rem;}
+.bt-top {display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px;
+         margin-bottom:0.6rem;}
+.bt-chip {display:inline-flex; align-items:center; gap:6px; padding:3px 11px;
+          border-radius:999px; font-size:0.92rem; background:rgba(128,128,128,0.12);
+          font-variant-numeric:tabular-nums;}
+.bt-chip.live {background:rgba(46,160,90,0.16); color:#2EA05A; font-weight:600;}
+.bt-chip.stale {background:rgba(220,70,60,0.16); color:#DC463C; font-weight:600;}
+.bt-chip.dim {background:none; opacity:0.6; font-size:0.82rem;}
+.bt-hub {margin-bottom:1rem;}
+.bt-head {display:flex; align-items:baseline; gap:8px; margin:0 0 6px 0;}
+.bt-head b {font-size:1.1rem; color:var(--acc);}
+.bt-head span {opacity:0.65; font-size:0.9rem;}
+.bt-box {overflow-x:auto; border:1px solid rgba(128,128,128,0.25);
+         border-top:3px solid var(--acc); border-radius:8px;
+         background:rgba(128,128,128,0.04);}
+table.bt {width:100%; border-collapse:collapse; font-size:0.95rem; margin:0;
+          border:none; font-variant-numeric:tabular-nums;}
+table.bt th {text-align:left; font-size:0.75rem; letter-spacing:0.05em;
+             text-transform:uppercase; opacity:0.65; font-weight:600;
+             padding:7px 10px; border:none;
+             border-bottom:1px solid rgba(128,128,128,0.25);}
+table.bt td {padding:6px 10px; vertical-align:top; border:none;
+             border-bottom:1px solid rgba(128,128,128,0.18);}
+table.bt tr:last-child td {border-bottom:none;}
+table.bt td.t {font-weight:700; color:var(--acc); width:2em;}
+table.bt .node {font-weight:600; white-space:nowrap; display:block;}
+table.bt .mt {opacity:0.65; font-size:0.84rem; white-space:nowrap; display:block;}
+table.bt .rw {white-space:nowrap; text-align:right;}
+table.bt .rw small {display:block; opacity:0.65; font-size:0.8rem;}
+table.bt .ally {opacity:0.75; white-space:nowrap;}
 </style>
 """, unsafe_allow_html=True)
 
-COL_NAMES = {"tier": "T", "mission": "Mission", "node": "Node", "bonus": "Bonus",
-             "levels_sp": "SP lvl", "reward": "Reward", "ally": "Ally"}
-
 head, btn = st.columns([5, 1], vertical_alignment="center")
-head.markdown("### 🎯 Warframe Bounties")
+head.markdown("## Warframe Bounties")
 if btn.button("🔄 Refresh", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
@@ -323,13 +350,14 @@ except Exception as e:
 
 expiry = dt.datetime.fromtimestamp(feed["expiry"] / 1000, dt.timezone.utc)
 delta = expiry - now
-parts = []
+chips = []
 if delta.total_seconds() > 0:
-    parts.append(f"🟢 <b>LIVE</b> {int(delta.total_seconds() // 60)} min left "
-                 f"(rotates {expiry.astimezone(LOCAL_TZ):%H:%M})")
+    chips.append(f"<span class='bt-chip live'>● LIVE · "
+                 f"{int(delta.total_seconds() // 60)} min left · "
+                 f"rotates {expiry.astimezone(LOCAL_TZ):%H:%M}</span>")
 else:
-    parts.append(f"🔴 <b>STALE</b> expired {int(-delta.total_seconds() // 60)} "
-                 "min ago, press Refresh")
+    chips.append(f"<span class='bt-chip stale'>● STALE · expired "
+                 f"{int(-delta.total_seconds() // 60)} min ago, press Refresh</span>")
 
 # --- Cetus
 try:
@@ -340,17 +368,16 @@ try:
     nxt = "night" if state == "day" else "day"
     icon = "☀️" if state == "day" else "🌙"
     if mins >= 0:
-        parts.append(f"{icon} Cetus <b>{state.upper()}</b> {mins} min to {nxt} "
-                     f"({cexp.astimezone(LOCAL_TZ):%H:%M})")
+        chips.append(f"<span class='bt-chip'>{icon} Cetus {state} · {mins} min to "
+                     f"{nxt} ({cexp.astimezone(LOCAL_TZ):%H:%M})</span>")
     else:
-        parts.append(f"{icon} Cetus outdated")
+        chips.append(f"<span class='bt-chip'>{icon} Cetus data outdated</span>")
 except Exception as e:
-    parts.append(f"Cetus unavailable ({type(e).__name__})")
+    chips.append(f"<span class='bt-chip'>Cetus unavailable ({type(e).__name__})</span>")
 
-parts.append(f"<span style='opacity:.6'>rot {feed['rot']}/{feed['vaultRot']} · "
+chips.append(f"<span class='bt-chip dim'>rot {feed['rot']}/{feed['vaultRot']} · "
              f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M}</span>")
-st.markdown(f"<div class='bt-status'>{' &nbsp;·&nbsp; '.join(parts)}</div>",
-            unsafe_allow_html=True)
+st.markdown(f"<div class='bt-top'>{''.join(chips)}</div>", unsafe_allow_html=True)
 
 # --- lookups
 try:
@@ -362,24 +389,50 @@ cdict = load_challenge_dict()
 present = set(feed["bounties"].keys())
 
 
-def render(label):
+def hub_html(label):
+    """One hub: coloured header + readable table, as a single HTML string."""
     spec = SYNDICATES[label]
-    st.markdown(f"<div class='bt-h'>{label}</div>", unsafe_allow_html=True)
+    name, _, place = label.partition(" (")
+    place = place.rstrip(")")
+    acc = HUB_COLORS.get(spec["key"], "#888888")
+    header = (f"<div class='bt-head'><b>{escape(name)}</b>"
+              f"<span>{escape(place)}</span></div>")
+
     if spec["key"] not in present:
-        st.caption("(not present in this feed)")
-        return
-    df = table(feed, nodes, spec, cdict)
-    if df.empty:
-        st.caption("(no bounties in this feed)")
-        return
-    html = df.rename(columns=COL_NAMES).to_html(index=False, classes="bt", border=0)
-    # strip newlines so markdown doesn't treat indented HTML as a code block
-    st.markdown(html.replace("\n", ""), unsafe_allow_html=True)
+        body = "<div style='opacity:.6'>(not present in this feed)</div>"
+    else:
+        df = table(feed, nodes, spec, cdict)
+        if df.empty:
+            body = "<div style='opacity:.6'>(no bounties in this feed)</div>"
+        else:
+            has_ally = "ally" in df.columns
+            ths = ("<th>T</th><th>Node</th><th>Bonus</th>"
+                   + ("<th>Ally</th>" if has_ally else "")
+                   + "<th style='text-align:right'>Reward</th>")
+            trs = []
+            for r in df.to_dict("records"):
+                ally = (f"<td class='ally'>{escape(r['ally'] or '-')}</td>"
+                        if has_ally else "")
+                trs.append(
+                    f"<tr><td class='t'>{r['tier']}</td>"
+                    f"<td><span class='node'>{escape(str(r['node']))}</span>"
+                    f"<span class='mt'>{escape(str(r['mission']))}</span></td>"
+                    f"<td>{escape(str(r['bonus']))}</td>{ally}"
+                    f"<td class='rw'>{escape(str(r['reward']))}"
+                    f"<small>SP {escape(str(r['levels_sp']))}</small></td></tr>")
+            body = (f"<div class='bt-box'><table class='bt'><thead><tr>{ths}</tr>"
+                    f"</thead><tbody>{''.join(trs)}</tbody></table></div>")
+
+    return f"<div class='bt-hub' style='--acc:{acc}'>{header}{body}</div>"
 
 
-# --- tables: Cavia + Zariman side by side (5 rows each), Hex full width.
+def render(label):
+    st.markdown(hub_html(label), unsafe_allow_html=True)
+
+
+# --- tables: Cavia + Holdfasts side by side, Hex full width underneath.
 # On a phone the two columns stack automatically.
-left, right = st.columns(2)
+left, right = st.columns(2, gap="medium")
 with left:
     render("Cavia (Sanctum Anatomica)")
 with right:
