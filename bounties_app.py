@@ -333,136 +333,147 @@ table.bt .ally {opacity:0.75; white-space:nowrap;}
 </style>
 """, unsafe_allow_html=True)
 
-head, btn = st.columns([7, 1], vertical_alignment="center")
-if btn.button("🔄 Refresh", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
-
-now = dt.datetime.now(dt.timezone.utc)
-
-# --- bounty feed
-try:
-    feed, fetched_at = load_feed()
-except Exception as e:
-    st.error(f"Could not load the bounty feed from oracle.browse.wf: {e}")
-    st.stop()
-
-expiry = dt.datetime.fromtimestamp(feed["expiry"] / 1000, dt.timezone.utc)
-delta = expiry - now
-chips = []
-if delta.total_seconds() > 0:
-    chips.append(f"<span class='bt-chip live'>● LIVE · "
-                 f"{int(delta.total_seconds() // 60)} min left · "
-                 f"rotates {expiry.astimezone(LOCAL_TZ):%H:%M}</span>")
-else:
-    chips.append(f"<span class='bt-chip stale'>● STALE · expired "
-                 f"{int(-delta.total_seconds() // 60)} min ago, press Refresh</span>")
-
-# --- Cetus
-# The Cetus cycle (100 min day + 50 min night) ends exactly when the 150-min
-# bounty rotation ends, so when warframestat is stale or down we can work it
-# out from the bounty feed's expiry instead.
-def cetus_from_feed():
-    left = (expiry - now).total_seconds() / 60
-    if left <= 0:
-        return None
-    if left > 50:
-        return "day", expiry - dt.timedelta(minutes=50)
-    return "night", expiry
+# Everything below re-runs by itself every 60 s (st.fragment with run_every),
+# so the timers and tables stay current without touching the page.
+# The data caches (60 s for the feed) decide how often the APIs are called.
+AUTO_REFRESH_SECONDS = 60
 
 
-cetus = None
-try:
-    c = load_cetus()
-    state = c.get("state") or ("day" if c.get("isDay") else "night")
-    cexp = dt.datetime.fromisoformat(c["expiry"].replace("Z", "+00:00"))
-    if cexp > now:
-        cetus = (state, cexp)
-except Exception:
-    pass
-if cetus is None:
-    cetus = cetus_from_feed()
+@st.fragment(run_every=AUTO_REFRESH_SECONDS)
+def dashboard():
+    head, btn = st.columns([7, 1], vertical_alignment="center")
+    if btn.button("🔄 Refresh", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-if cetus:
-    state, cexp = cetus
-    mins = int((cexp - now).total_seconds() // 60)
-    nxt = "night" if state == "day" else "day"
-    icon = "☀️" if state == "day" else "🌙"
-    chips.append(f"<span class='bt-chip'>{icon} Cetus {state} · {mins} min to "
-                 f"{nxt} ({cexp.astimezone(LOCAL_TZ):%H:%M})</span>")
-else:
-    chips.append("<span class='bt-chip'>Cetus unavailable</span>")
+    now = dt.datetime.now(dt.timezone.utc)
 
-chips.append(f"<span class='bt-chip dim'>rot {feed['rot']}/{feed['vaultRot']} · "
-             f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M}</span>")
-head.markdown(f"<div class='bt-top'><span class='bt-title'>Warframe Bounties</span>"
-              f"{''.join(chips)}</div>", unsafe_allow_html=True)
+    # --- bounty feed
+    try:
+        feed, fetched_at = load_feed()
+    except Exception as e:
+        st.error(f"Could not load the bounty feed from oracle.browse.wf: {e}")
+        st.stop()
 
-# --- lookups
-try:
-    nodes = load_nodes()
-except RuntimeError as e:
-    st.warning(f"{e}. Node names and mission types will show as IDs.")
-    nodes = {}
-cdict = load_challenge_dict()
-present = set(feed["bounties"].keys())
-
-
-def hub_html(label):
-    """One hub: coloured header + readable table, as a single HTML string."""
-    spec = SYNDICATES[label]
-    name, _, place = label.partition(" (")
-    place = place.rstrip(")")
-    acc = HUB_COLORS.get(spec["key"], "#888888")
-    header = (f"<div class='bt-head'><b>{escape(name)}</b>"
-              f"<span>{escape(place)}</span></div>")
-
-    if spec["key"] not in present:
-        body = "<div style='opacity:.6'>(not present in this feed)</div>"
+    expiry = dt.datetime.fromtimestamp(feed["expiry"] / 1000, dt.timezone.utc)
+    delta = expiry - now
+    chips = []
+    if delta.total_seconds() > 0:
+        chips.append(f"<span class='bt-chip live'>● LIVE · "
+                     f"{int(delta.total_seconds() // 60)} min left · "
+                     f"rotates {expiry.astimezone(LOCAL_TZ):%H:%M}</span>")
     else:
-        df = table(feed, nodes, spec, cdict)
-        if df.empty:
-            body = "<div style='opacity:.6'>(no bounties in this feed)</div>"
+        chips.append(f"<span class='bt-chip stale'>● STALE · expired "
+                     f"{int(-delta.total_seconds() // 60)} min ago, press Refresh</span>")
+
+    # --- Cetus
+    # The Cetus cycle (100 min day + 50 min night) ends exactly when the 150-min
+    # bounty rotation ends, so when warframestat is stale or down we can work it
+    # out from the bounty feed's expiry instead.
+    def cetus_from_feed():
+        left = (expiry - now).total_seconds() / 60
+        if left <= 0:
+            return None
+        if left > 50:
+            return "day", expiry - dt.timedelta(minutes=50)
+        return "night", expiry
+
+
+    cetus = None
+    try:
+        c = load_cetus()
+        state = c.get("state") or ("day" if c.get("isDay") else "night")
+        cexp = dt.datetime.fromisoformat(c["expiry"].replace("Z", "+00:00"))
+        if cexp > now:
+            cetus = (state, cexp)
+    except Exception:
+        pass
+    if cetus is None:
+        cetus = cetus_from_feed()
+
+    if cetus:
+        state, cexp = cetus
+        mins = int((cexp - now).total_seconds() // 60)
+        nxt = "night" if state == "day" else "day"
+        icon = "☀️" if state == "day" else "🌙"
+        chips.append(f"<span class='bt-chip'>{icon} Cetus {state} · {mins} min to "
+                     f"{nxt} ({cexp.astimezone(LOCAL_TZ):%H:%M})</span>")
+    else:
+        chips.append("<span class='bt-chip'>Cetus unavailable</span>")
+
+    chips.append(f"<span class='bt-chip dim'>rot {feed['rot']}/{feed['vaultRot']} · "
+                 f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M} · auto-updates</span>")
+    head.markdown(f"<div class='bt-top'><span class='bt-title'>Warframe Bounties</span>"
+                  f"{''.join(chips)}</div>", unsafe_allow_html=True)
+
+    # --- lookups
+    try:
+        nodes = load_nodes()
+    except RuntimeError as e:
+        st.warning(f"{e}. Node names and mission types will show as IDs.")
+        nodes = {}
+    cdict = load_challenge_dict()
+    present = set(feed["bounties"].keys())
+
+
+    def hub_html(label):
+        """One hub: coloured header + readable table, as a single HTML string."""
+        spec = SYNDICATES[label]
+        name, _, place = label.partition(" (")
+        place = place.rstrip(")")
+        acc = HUB_COLORS.get(spec["key"], "#888888")
+        header = (f"<div class='bt-head'><b>{escape(name)}</b>"
+                  f"<span>{escape(place)}</span></div>")
+
+        if spec["key"] not in present:
+            body = "<div style='opacity:.6'>(not present in this feed)</div>"
         else:
-            has_ally = "ally" in df.columns
-            ths = ("<th>T</th><th>Node</th><th>Bonus</th>"
-                   + ("<th>Ally</th>" if has_ally else "")
-                   + "<th style='text-align:right'>Reward</th>")
-            trs = []
-            for r in df.to_dict("records"):
-                ally = (f"<td class='ally'>{escape(r['ally'] or '-')}</td>"
-                        if has_ally else "")
-                trs.append(
-                    f"<tr><td class='t'>{r['tier']}</td>"
-                    f"<td><span class='node'>{escape(str(r['node']))}</span>"
-                    f"<span class='mt'>{escape(str(r['mission']))}</span></td>"
-                    f"<td>{escape(str(r['bonus']))}</td>{ally}"
-                    f"<td class='rw'>{escape(str(r['reward']))}"
-                    f"<small>SP {escape(str(r['levels_sp']))}</small></td></tr>")
-            body = (f"<div class='bt-box'><table class='bt'><thead><tr>{ths}</tr>"
-                    f"</thead><tbody>{''.join(trs)}</tbody></table></div>")
+            df = table(feed, nodes, spec, cdict)
+            if df.empty:
+                body = "<div style='opacity:.6'>(no bounties in this feed)</div>"
+            else:
+                has_ally = "ally" in df.columns
+                ths = ("<th>T</th><th>Node</th><th>Bonus</th>"
+                       + ("<th>Ally</th>" if has_ally else "")
+                       + "<th style='text-align:right'>Reward</th>")
+                trs = []
+                for r in df.to_dict("records"):
+                    ally = (f"<td class='ally'>{escape(r['ally'] or '-')}</td>"
+                            if has_ally else "")
+                    trs.append(
+                        f"<tr><td class='t'>{r['tier']}</td>"
+                        f"<td><span class='node'>{escape(str(r['node']))}</span>"
+                        f"<span class='mt'>{escape(str(r['mission']))}</span></td>"
+                        f"<td>{escape(str(r['bonus']))}</td>{ally}"
+                        f"<td class='rw'>{escape(str(r['reward']))}"
+                        f"<small>SP {escape(str(r['levels_sp']))}</small></td></tr>")
+                body = (f"<div class='bt-box'><table class='bt'><thead><tr>{ths}</tr>"
+                        f"</thead><tbody>{''.join(trs)}</tbody></table></div>")
 
-    return f"<div class='bt-hub' style='--acc:{acc}'>{header}{body}</div>"
+        return f"<div class='bt-hub' style='--acc:{acc}'>{header}{body}</div>"
 
 
-def render(label):
-    st.markdown(hub_html(label), unsafe_allow_html=True)
+    def render(label):
+        st.markdown(hub_html(label), unsafe_allow_html=True)
 
 
-# --- tables: Cavia + Holdfasts side by side, Hex full width underneath.
-# On a phone the two columns stack automatically.
-left, right = st.columns(2, gap="medium")
-with left:
-    render("Cavia (Sanctum Anatomica)")
-with right:
-    render("Holdfasts (Zariman)")
-render("Hex (Hollvania / 1999)")
+    # --- tables: Cavia + Holdfasts side by side, Hex full width underneath.
+    # On a phone the two columns stack automatically.
+    left, right = st.columns(2, gap="medium")
+    with left:
+        render("Cavia (Sanctum Anatomica)")
+    with right:
+        render("Holdfasts (Zariman)")
+    render("Hex (Hollvania / 1999)")
 
-# --- unmapped syndicates (new hub added to the feed?)
-known = {s["key"] for s in SYNDICATES.values()}
-unmapped = sorted(present - known)
-if unmapped:
-    with st.expander(f"⚠️ Feed has unmapped syndicate keys: {', '.join(unmapped)}"):
-        for k in unmapped:
-            st.write(f"**{k}**: {len(feed['bounties'][k])} entries")
-            st.json(feed["bounties"][k][:2])
+    # --- unmapped syndicates (new hub added to the feed?)
+    known = {s["key"] for s in SYNDICATES.values()}
+    unmapped = sorted(present - known)
+    if unmapped:
+        with st.expander(f"⚠️ Feed has unmapped syndicate keys: {', '.join(unmapped)}"):
+            for k in unmapped:
+                st.write(f"**{k}**: {len(feed['bounties'][k])} entries")
+                st.json(feed["bounties"][k][:2])
+
+
+dashboard()
