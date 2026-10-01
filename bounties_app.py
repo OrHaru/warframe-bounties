@@ -308,6 +308,18 @@ st.markdown("""
 .bt-chip.live {background:rgba(46,160,90,0.16); color:#2EA05A; font-weight:600;}
 .bt-chip.stale {background:rgba(220,70,60,0.16); color:#DC463C; font-weight:600;}
 .bt-chip.dim {background:none; opacity:0.6; font-size:0.82rem;}
+.bt-rot {margin-left:auto; display:flex; align-items:center; gap:12px;
+         padding:4px 14px 4px 12px; border-radius:10px;
+         border:1px solid rgba(128,128,128,0.25); border-left:4px solid #2EA05A;
+         background:rgba(46,160,90,0.08);}
+.bt-rot.soon {border-left-color:#E0A126; background:rgba(224,161,38,0.12);}
+.bt-rot.stale {border-left-color:#DC463C; background:rgba(220,70,60,0.12);}
+.bt-rot .lbl {font-size:0.72rem; letter-spacing:0.06em; text-transform:uppercase;
+              opacity:0.7; line-height:1.15;}
+.bt-rot .tm {font-size:2.3rem; font-weight:700; line-height:1;
+             font-variant-numeric:tabular-nums;}
+.bt-rot .in {font-size:0.95rem; font-weight:600; opacity:0.85; line-height:1.2;
+             font-variant-numeric:tabular-nums;}
 .bt-hub {margin-bottom:0.7rem;}
 .bt-head {display:flex; align-items:baseline; gap:8px; margin:0 0 4px 0;}
 .bt-head b {font-size:1.1rem; color:var(--acc);}
@@ -358,13 +370,20 @@ def dashboard():
     expiry = dt.datetime.fromtimestamp(feed["expiry"] / 1000, dt.timezone.utc)
     delta = expiry - now
     chips = []
+    left_min = int(delta.total_seconds() // 60)
+    rot_time = f"{expiry.astimezone(LOCAL_TZ):%H:%M}"
     if delta.total_seconds() > 0:
-        chips.append(f"<span class='bt-chip live'>● LIVE · "
-                     f"{int(delta.total_seconds() // 60)} min left · "
-                     f"rotates {expiry.astimezone(LOCAL_TZ):%H:%M}</span>")
+        chips.append("<span class='bt-chip live'>● LIVE</span>")
+        # big "rotate at" box; amber in the last 10 minutes
+        rot_cls = "bt-rot soon" if left_min < 10 else "bt-rot"
+        rot_box = (f"<div class='{rot_cls}'><div class='lbl'>Bounties<br>rotate at</div>"
+                   f"<div class='tm'>{rot_time}</div>"
+                   f"<div class='in'>in {left_min} min</div></div>")
     else:
-        chips.append(f"<span class='bt-chip stale'>● STALE · expired "
-                     f"{int(-delta.total_seconds() // 60)} min ago, press Refresh</span>")
+        chips.append("<span class='bt-chip stale'>● STALE</span>")
+        rot_box = (f"<div class='bt-rot stale'><div class='lbl'>Rotated at</div>"
+                   f"<div class='tm'>{rot_time}</div>"
+                   f"<div class='in'>waiting for new data</div></div>")
 
     # --- Cetus
     # The Cetus cycle (100 min day + 50 min night) ends exactly when the 150-min
@@ -404,7 +423,7 @@ def dashboard():
     chips.append(f"<span class='bt-chip dim'>rot {feed['rot']}/{feed['vaultRot']} · "
                  f"fetched {fetched_at.astimezone(LOCAL_TZ):%H:%M} · auto-updates</span>")
     head.markdown(f"<div class='bt-top'><span class='bt-title'>Warframe Bounties</span>"
-                  f"{''.join(chips)}</div>", unsafe_allow_html=True)
+                  f"{''.join(chips)}{rot_box}</div>", unsafe_allow_html=True)
 
     # --- lookups
     try:
