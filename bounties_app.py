@@ -10,6 +10,7 @@ Run locally:   streamlit run bounties_app.py
 """
 
 import datetime as dt
+import re
 import time
 from html import escape
 
@@ -28,7 +29,12 @@ NODES_URLS = [
     "/data/solNodes.json",
 ]
 CETUS = "https://api.warframestat.us/pc/cetusCycle"
-DICT_URLS = ["https://oracle.browse.wf/dicts/en.json"]
+# The game's own challenge list + English text (same data browse.wf uses to
+# show bounty bonuses). Mirror on GitHub in case browse.wf is down.
+EXPORT_BASES = [
+    "https://browse.wf/warframe-public-export-plus/",
+    "https://raw.githubusercontent.com/calamity-inc/warframe-public-export-plus/senpai/",
+]
 
 # Display timezone (the server runs in UTC).
 try:
@@ -117,7 +123,15 @@ CHALLENGE_HINTS = {
         ("alchemygrenadetoxin", "Poison Chalice: hit enemies with 6/12/18 Toxin Amphors"),
         ("summonnecramech", "A Loyal Necramech: summon a Necramech"),
         ("vitriol", "Chemistry Lesson: douse 30 enemies with Vitriol"),
+        ("defeatdoppelganger", "Deadly Whispers: defeat the Mocking or Scathing Whisper"),
         ("whisper", "Deadly Whispers: defeat the Mocking or Scathing Whisper"),
+        ("collecttears", "Stare Down: collect 45 Murmur Eyes"),
+        ("defenseactivatepillar", "See No Evil: activate 1/2/3/4 defences"),
+        ("killvialedenemy", "Chemistry Lesson: douse 30 enemies with Vitriol"),
+        ("destroydemolystlimbs", "Dismantle Demolishers: destroy 3/5/8 Demolisher limbs"),
+        ("nearconduitvulnerability", "Determined Demolishers: invulnerable until 40m from Conduit"),
+        ("unstabledockets", "Paranoia Protocol: Dockets vanish after 20s"),
+        ("sixminute", "On the Clock: complete the bounty in 6 minutes"),
         ("flying", "Air Defence: kill 3 flying Murmur enemies"),
         ("demolisherlimb", "Dismantle Demolishers: destroy 3/5/8 Demolisher limbs"),
         ("conduit", "Anxious Activation: activate 2 Conduits in 30s"),
@@ -138,6 +152,7 @@ CHALLENGE_HINTS = {
         ("accolade", "Boost Melica's Morale: take a Zarium Accolade to Melica"),
         ("melica", "Boost Melica's Morale: take a Zarium Accolade to Melica"),
         ("argozene", "Accumulate Argozene: collect 3/5/7/9 Argozene Canisters"),
+        ("scrapcrates", "Accumulate Argozene: collect 3/5/7/9 Argozene Canisters"),
         ("killasoperator", "Work without Warframes: kill 10/20/30/40 as Operator"),
         ("exodamper", "Protect Our Exodampers: kill 2/3 Angels, keep Exodampers intact"),
         ("vitoplastglobule", "Harvest Vitoplast Globules: collect 4/6/8/10 globules"),
@@ -196,14 +211,32 @@ def load_nodes():
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
-def load_challenge_dict():
-    for url in DICT_URLS:
+def load_challenge_texts():
+    """{challenge path: (bounty name, objective)} from the game's own data.
+
+    Only the ~600 challenge entries are kept, not the whole 4 MB dictionary,
+    so the cached copy stays small. Returns {} if no source answers; the
+    keyword list below is then used instead.
+    """
+    for base in EXPORT_BASES:
         try:
-            data = fetch(url)
+            challenges = fetch(base + "ExportChallenges.json")
+            words = fetch(base + "dict.en.json")
         except Exception:
             continue
-        if isinstance(data, dict) and data:
-            return data
+        out = {}
+        for path, c in challenges.items():
+            name = words.get(c.get("name", ""), "")
+            desc = words.get(c.get("description", ""), "")
+            # Hex descriptions start with a coloured "Antivirus Bounty" line;
+            # the objective is the last line (same as browse.wf does).
+            desc = desc.replace("\r\n", "\n").split("\n")[-1]
+            desc = re.sub(r"\|[A-Z_]+_COLOR\|", "", desc)
+            desc = desc.replace("|COUNT|", str(c.get("requiredCount", "")))
+            if name or desc:
+                out[path] = (name.strip(), desc.strip())
+        if out:
+            return out
     return {}
 
 
@@ -219,38 +252,35 @@ def load_cetus():
     return fetch(CETUS)
 
 
-def describe(path: str, cdict: dict) -> str:
-    """Readable challenge text: dictionary desc if available, else hints, else prettify."""
-    if cdict:
-        base = path.rsplit("/", 1)[-1]
-        for key in (path, path.lower(), base, base.lower()):
-            entry = cdict.get(key)
-            if entry is None:
-                continue
-            if isinstance(entry, str):
-                return entry
-            if isinstance(entry, dict):
-                desc = entry.get("desc") or entry.get("description")
-                name = entry.get("value") or entry.get("name")
-                if desc and name:
-                    return f"{name}: {desc}"
-                if desc or name:
-                    return desc or name
+def describe(path: str, ctexts: dict):
+    """(bounty name, objective) for a challenge path.
+
+    1. the game's own text (exact, same as in-game)
+    2. fallback when that data can't be loaded: keyword list below
+    3. last resort: the challenge id made readable
+    """
+    if path in ctexts:
+        return ctexts[path]
     low = path.lower()
+    # Match keywords only against the challenge's own name (last part of the
+    # path). The folders above it can contain words like "Whispers" (from the
+    # Whispers in the Walls update), which made unrelated Cavia bonuses show
+    # up as "Defeat the Mocking or Scathing Whisper".
+    name = low.rsplit("/", 1)[-1]
     hints = []
     for prefix, entries in CHALLENGE_HINTS.items():
         if prefix in low:
             hints = entries
             break
     for needle, text in hints:
-        if needle in low:
-            text = text.split(": ", 1)[-1]
+        if needle in name:
+            title, _, text = text.partition(": ")
             for tag, suffix in (("veryhard", " [T4]"), ("hard", " [T3]"),
                                 ("easy", " [T1]")):
-                if tag in low:
-                    return text + suffix
-            return text
-    return prettify(path)
+                if tag in name:
+                    return title, text + suffix
+            return title, text
+    return "", prettify(path)
 
 
 def table(feed, nodes, spec, cdict):
@@ -270,7 +300,8 @@ def table(feed, nodes, spec, cdict):
             "tier": i + 1,
             "mission": mtype,
             "node": name,
-            "bonus": describe(b["challenge"], cdict),
+            "bonus": describe(b["challenge"], cdict),  # (name, objective)
+            "raw": b["challenge"].rsplit("/", 1)[-1],
             "levels_sp": tier.get("levels_sp", "?"),
             "reward": tier.get("reward", "?"),
         }
@@ -278,7 +309,7 @@ def table(feed, nodes, spec, cdict):
             row["ally"] = prettify(b["ally"])
         rows.append(row)
 
-    cols = ["tier", "mission", "node", "bonus", "levels_sp", "reward"]
+    cols = ["tier", "mission", "node", "bonus", "levels_sp", "reward", "raw"]
     if any("ally" in r for r in rows):
         cols.append("ally")
         for r in rows:
@@ -342,6 +373,8 @@ table.bt .mt {opacity:0.65; font-size:0.8rem; white-space:nowrap; display:block;
 table.bt .rw {white-space:nowrap; text-align:right;}
 table.bt .rw small {display:block; opacity:0.65; font-size:0.78rem;}
 table.bt .ally {opacity:0.75; white-space:nowrap;}
+table.bt .bn {font-weight:600; display:block;}
+table.bt .bo {opacity:0.75; font-size:0.85rem; display:block;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -349,6 +382,15 @@ table.bt .ally {opacity:0.75; white-space:nowrap;}
 # so the timers and tables stay current without touching the page.
 # The data caches (60 s for the feed) decide how often the APIs are called.
 AUTO_REFRESH_SECONDS = 60
+
+
+def bonus_html(bonus):
+    """Bounty name in bold (as on the in-game board) with the objective under it."""
+    name, objective = bonus
+    if not name:
+        return escape(objective)
+    return (f"<span class='bn'>{escape(name)}</span>"
+            f"<span class='bo'>{escape(objective)}</span>")
 
 
 @st.fragment(run_every=AUTO_REFRESH_SECONDS)
@@ -431,7 +473,7 @@ def dashboard():
     except RuntimeError as e:
         st.warning(f"{e}. Node names and mission types will show as IDs.")
         nodes = {}
-    cdict = load_challenge_dict()
+    cdict = load_challenge_texts()
     present = set(feed["bounties"].keys())
 
 
@@ -463,7 +505,7 @@ def dashboard():
                         f"<tr><td class='t'>{r['tier']}</td>"
                         f"<td><span class='node'>{escape(str(r['node']))}</span>"
                         f"<span class='mt'>{escape(str(r['mission']))}</span></td>"
-                        f"<td>{escape(str(r['bonus']))}</td>{ally}"
+                        f"<td title='{escape(str(r['raw']))}'>{bonus_html(r['bonus'])}</td>{ally}"
                         f"<td class='rw'>{escape(str(r['reward']))}"
                         f"<small>SP {escape(str(r['levels_sp']))}</small></td></tr>")
                 body = (f"<div class='bt-box'><table class='bt'><thead><tr>{ths}</tr>"
